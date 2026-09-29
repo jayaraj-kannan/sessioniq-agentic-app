@@ -78,12 +78,13 @@ async def create_session(req: CreateSessionRequest):
         project_id = _get_project_id()
         db = firestore.Client(project=project_id)
         session_id = f"session-{uuid.uuid4().hex[:8]}"
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         session_data = {
             "session_id": session_id,
             "title": req.title,
             "description": req.description,
-            "created_at": firestore.SERVER_TIMESTAMP,
-            "updated_at": firestore.SERVER_TIMESTAMP,
+            "created_at": now_iso,
+            "updated_at": now_iso,
             "has_materials": False,
         }
         db.collection("sessions").document(session_id).set(session_data)

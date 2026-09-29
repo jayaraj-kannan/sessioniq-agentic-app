@@ -1,8 +1,32 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 
-const API_BASE = 'http://localhost:8000'
-const WS_BASE = 'ws://localhost:8000'
+// Dynamic server configuration from Vite environment variables with automatic fallback
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_BASE !== undefined && import.meta.env.VITE_API_BASE !== '') {
+    return import.meta.env.VITE_API_BASE
+  }
+  // If running in browser and served from the same host (e.g. Cloud Run), use relative path
+  if (typeof window !== 'undefined' && window.location.port !== '5173') {
+    return window.location.origin
+  }
+  return 'http://localhost:8000'
+}
+
+const getWsBase = () => {
+  if (import.meta.env.VITE_WS_BASE !== undefined && import.meta.env.VITE_WS_BASE !== '') {
+    return import.meta.env.VITE_WS_BASE
+  }
+  if (typeof window !== 'undefined' && window.location.port !== '5173') {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}`
+  }
+  return 'ws://localhost:8000'
+}
+
+const API_BASE = getApiBase()
+const WS_BASE = getWsBase()
+
 
 // --- Navigation & Views ---
 const currentTab = ref('sessions') // 'sessions' | 'detail' | 'lobby' | 'game'

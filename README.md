@@ -14,6 +14,15 @@
 
 ---
 
+<div align="center">
+
+[![Live App on Cloud Run](https://img.shields.io/badge/Cloud%20Run-sessioniq--app-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white)](https://sessioniq-app-631818993423.us-east1.run.app)
+[![Agent Engine](https://img.shields.io/badge/Agent%20Engine-Deployed%20(A2A)-34A853?style=for-the-badge&logo=google&logoColor=white)](https://console.cloud.google.com/vertex-ai/agents/agent-engines/locations/us-east1/agent-engines/4752790743666393088?project=qwiklabs-gcp-04-ca621c40ffa0)
+
+</div>
+
+---
+
 ## 📖 Overview
 
 **SessionIQ** is an agentic platform designed for conference organizers, educators, and live audiences. It breaks down raw recorded video/audio transcripts and session notes into multi-difficulty quiz schemas, archives source media into Google Cloud Storage, persists game collections in Firestore, and drives real-time Kahoot-style multiplayer trivia battles via WebSockets with a bold Neo-Brutalist Vue 3 user interface.

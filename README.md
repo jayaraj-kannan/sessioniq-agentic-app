@@ -133,15 +133,53 @@ cp .env.example .env
 | `PORT` | FastAPI REST & WebSocket server port | `8000` |
 | `FRONTEND_PORT` | Vite Vue 3 dev server port | `5173` |
 
-### 1. Prerequisites
-- Python 3.11+ or 3.12 (`uv` recommended)
-- Node.js 18+ and npm
-- Google Cloud CLI (`gcloud`) authenticated to your project with Firestore and Storage enabled:
-  ```bash
-  gcloud auth login
-  gcloud auth application-default login
-  gcloud services enable firestore.googleapis.com storage.googleapis.com aiplatform.googleapis.com
-  ```
+### 📋 Prerequisites & Required Google Cloud APIs
+
+#### 1. System Requirements
+- **Python**: 3.11 or 3.12 (`uv` package manager recommended)
+- **Node.js**: v18+ or v20+ with `npm`
+- **Google Cloud CLI (`gcloud`)**: authenticated to your target GCP project
+
+#### 2. Required Google Cloud APIs
+SessionIQ relies on the following APIs which must be enabled in your Google Cloud project:
+
+| API Service | Service Identifier | Purpose in SessionIQ |
+| :--- | :--- | :--- |
+| **Agent Platform / Vertex AI** | `aiplatform.googleapis.com` | Gemini 2.5 Flash model inference & ADK agent reasoning |
+| **Cloud Firestore** | `firestore.googleapis.com` | Native Firestore database for sessions and quiz collections |
+| **Cloud Storage** | `storage.googleapis.com` | Storing uploaded input materials, videos, and transcripts |
+| **Cloud Resource Manager** | `cloudresourcemanager.googleapis.com` | Project metadata and IAM role resolution |
+| **Cloud Logging** | `logging.googleapis.com` | Observability and Agent telemetry tracking |
+
+Run this single command to enable all required APIs at once:
+```bash
+gcloud services enable \
+  aiplatform.googleapis.com \
+  firestore.googleapis.com \
+  storage.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  logging.googleapis.com
+```
+
+#### 3. Required IAM Roles
+Ensure your active identity (user account or Cloud service account) has the following IAM permissions:
+- `roles/aiplatform.user` (invoke Vertex AI Gemini models)
+- `roles/datastore.user` (read/write access to Firestore collections)
+- `roles/storage.objectAdmin` (upload/download input files to the session bucket)
+
+You can grant these roles with:
+```bash
+PROJECT_ID="$(gcloud config get-value project)"
+USER_EMAIL="$(gcloud config get-value account)"
+
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="user:$USER_EMAIL" \
+  --role="roles/aiplatform.user"
+
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="user:$USER_EMAIL" \
+  --role="roles/datastore.user"
+```
 
 ### 2. Backend Setup
 1. Navigate to the agent workspace:

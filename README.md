@@ -96,6 +96,43 @@ A high-contrast, tactile retro interface built with **Vue 3** and modern styling
 
 ## 🚀 Quickstart & Setup Guide
 
+
+### Environment Configuration ()
+
+Copy  to  before running:
+```bash
+cp .env.example .env
+```
+
+Variables explained:
+| Variable | Description | Example / Default |
+| :--- | :--- | :--- |
+|  | Your GCP Project ID (used by Firestore & Storage) |  |
+|  | Region for Vertex AI & Firestore |  |
+|  | Enables Vertex AI mode for Gemini SDK |  |
+|  | Foundation model for the agents |  |
+|  | Dedicated Cloud Storage bucket for input media |  |
+|  | FastAPI REST & WebSocket server port |  |
+|  | Vite Vue 3 dev server port |  |
+
+
+### ⚙️ Environment Configuration (`.env`)
+
+Create a `.env` file from the example:
+```bash
+cp .env.example .env
+```
+
+| Variable | Description | Example / Default |
+| :--- | :--- | :--- |
+| `GOOGLE_CLOUD_PROJECT` | Your GCP Project ID (used by Firestore & Storage) | `your-gcp-project-id` |
+| `GOOGLE_CLOUD_LOCATION` | Region for Vertex AI & Firestore | `us-east1` |
+| `GOOGLE_GENAI_USE_VERTEXAI` | Enables Vertex AI mode for Gemini SDK | `true` |
+| `GEMINI_MODEL` | Foundation model for the agents | `gemini-2.5-flash` |
+| `SESSIONIQ_GCS_BUCKET` | Dedicated Cloud Storage bucket for input media | `<project-id>-sessioniq-assets` |
+| `PORT` | FastAPI REST & WebSocket server port | `8000` |
+| `FRONTEND_PORT` | Vite Vue 3 dev server port | `5173` |
+
 ### 1. Prerequisites
 - Python 3.11+ or 3.12 (`uv` recommended)
 - Node.js 18+ and npm

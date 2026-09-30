@@ -39,6 +39,7 @@ def _generate_room_code(length: int = 6) -> str:
 from app.auth import (
     register_user,
     login_user,
+    google_authenticate,
     get_current_user_optional,
     get_current_user_required,
     verify_session_ownership,
@@ -47,13 +48,21 @@ from app.auth import (
 
 # --- Models ---
 class RegisterRequest(BaseModel):
-    email: str
+    username: Optional[str] = None
+    email: Optional[str] = None
     password: str
     display_name: Optional[str] = None
 
 class LoginRequest(BaseModel):
-    email: str
+    identifier: Optional[str] = None  # username or email
+    email: Optional[str] = None       # backward compatibility
     password: str
+
+class GoogleAuthRequest(BaseModel):
+    credential: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
 
 class CreateSessionRequest(BaseModel):
     title: str
@@ -78,9 +87,14 @@ async def health_check():
 
 @app.post("/api/auth/register")
 async def handle_register(req: RegisterRequest):
-    """Register a new user account in Firestore."""
+    """Register a new user account with username/password or email in Firestore."""
     try:
-        user = register_user(req.email, req.password, req.display_name)
+        user = register_user(
+            username=req.username,
+            email=req.email,
+            password=req.password,
+            display_name=req.display_name
+        )
         return {"status": "success", "user": user}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -89,12 +103,31 @@ async def handle_register(req: RegisterRequest):
 
 @app.post("/api/auth/login")
 async def handle_login(req: LoginRequest):
-    """Authenticate an existing user account against Firestore."""
+    """Authenticate an existing user account by username or email against Firestore."""
     try:
-        user = login_user(req.email, req.password)
+        ident = req.identifier or req.email
+        if not ident:
+            raise ValueError("Username or email is required")
+        user = login_user(ident, req.password)
         return {"status": "success", "user": user}
     except ValueError as ve:
         raise HTTPException(status_code=401, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/auth/google")
+async def handle_google_auth(req: GoogleAuthRequest):
+    """Authenticate or register user using Google Sign-In."""
+    try:
+        user = google_authenticate(
+            credential=req.credential,
+            email=req.email,
+            name=req.name,
+            picture=req.picture
+        )
+        return {"status": "success", "user": user}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

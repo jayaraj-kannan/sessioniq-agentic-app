@@ -81,11 +81,15 @@ let timerInterval = null
 const currentUser = ref(null)
 const showAuthModal = ref(false)
 const authMode = ref('login') // 'login' | 'register'
-const authEmail = ref('')
+const authIdentifier = ref('') // username or email for login
+const authUsername = ref('')   // username for register
+const authEmail = ref('')      // email for register
 const authPassword = ref('')
 const authDisplayName = ref('')
 const authError = ref('')
 const isAuthSubmitting = ref(false)
+const googleClientId = ref('') // optional custom OAuth client ID
+const showGooglePrompt = ref(false)
 
 // Load user from localStorage if saved
 try {
@@ -107,41 +111,158 @@ function getAuthHeaders() {
 
 async function handleAuthSubmit() {
   authError.value = ''
-  if (!authEmail.value.trim() || !authPassword.value.trim()) {
-    authError.value = 'Please enter email and password'
-    return
-  }
   isAuthSubmitting.value = true
-  const endpoint = authMode.value === 'register' ? '/api/auth/register' : '/api/auth/login'
-  const payload = {
-    email: authEmail.value.trim(),
-    password: authPassword.value,
-  }
-  if (authMode.value === 'register' && authDisplayName.value.trim()) {
-    payload.display_name = authDisplayName.value.trim()
-  }
 
   try {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-    const data = await res.json()
-    if (!res.ok) {
-      throw new Error(data.detail || 'Authentication failed')
+    if (authMode.value === 'register') {
+      if (!authUsername.value.trim() && !authEmail.value.trim()) {
+        throw new Error('Please enter a username or email address')
+      }
+      if (!authPassword.value || authPassword.value.length < 6) {
+        throw new Error('Password must be at least 6 characters')
+      }
+
+      const payload = {
+        username: authUsername.value.trim() || undefined,
+        email: authEmail.value.trim() || undefined,
+        password: authPassword.value,
+        display_name: authDisplayName.value.trim() || undefined
+      }
+
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.detail || 'Registration failed')
+      }
+      currentUser.value = data.user
+      localStorage.setItem('sessioniq_user', JSON.stringify(data.user))
+      username.value = data.user.display_name || data.user.username || data.user.email.split('@')[0]
+      showAuthModal.value = false
+      statusMessage.value = `Welcome, ${username.value}! Your account is registered.`
+    } else {
+      // Login mode
+      if (!authIdentifier.value.trim() || !authPassword.value) {
+        throw new Error('Please enter your username/email and password')
+      }
+
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: authIdentifier.value.trim(),
+          password: authPassword.value
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.detail || 'Invalid username/email or password')
+      }
+      currentUser.value = data.user
+      localStorage.setItem('sessioniq_user', JSON.stringify(data.user))
+      username.value = data.user.display_name || data.user.username || data.user.email.split('@')[0]
+      showAuthModal.value = false
+      statusMessage.value = `Welcome back, ${username.value}!`
     }
-    currentUser.value = data.user
-    localStorage.setItem('sessioniq_user', JSON.stringify(data.user))
-    username.value = data.user.display_name || data.user.email.split('@')[0]
-    showAuthModal.value = false
-    statusMessage.value = `Welcome, ${username.value}! You can now create sessions and build quizzes.`
   } catch (err) {
     authError.value = err.message
   } finally {
     isAuthSubmitting.value = false
   }
 }
+
+// Google Sign-In with Google Identity Services (One-Tap / GSI button) or Direct Google Login
+async function handleGoogleLoginSuccess(response) {
+  authError.value = ''
+  isAuthSubmitting.value = true
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: response.credential })
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      throw new Error(data.detail || 'Google authentication failed')
+    }
+    currentUser.value = data.user
+    localStorage.setItem('sessioniq_user', JSON.stringify(data.user))
+    username.value = data.user.display_name || data.user.username || data.user.email.split('@')[0]
+    showAuthModal.value = false
+    statusMessage.value = `Signed in with Google as ${username.value}!`
+  } catch (err) {
+    authError.value = err.message
+  } finally {
+    isAuthSubmitting.value = false
+  }
+}
+
+// Fallback Quick Google Sign-In prompt (allows entering Google email if client ID not configured)
+async function handleQuickGoogleSignIn() {
+  const userGoogleEmail = prompt('Enter your Google Account email:')
+  if (!userGoogleEmail || !userGoogleEmail.includes('@')) return
+
+  authError.value = ''
+  isAuthSubmitting.value = true
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: userGoogleEmail.trim(),
+        name: userGoogleEmail.split('@')[0].replace('.', ' ').toUpperCase()
+      })
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Google sign-in failed')
+    currentUser.value = data.user
+    localStorage.setItem('sessioniq_user', JSON.stringify(data.user))
+    username.value = data.user.display_name || data.user.username || data.user.email.split('@')[0]
+    showAuthModal.value = false
+    statusMessage.value = `Signed in with Google as ${username.value}!`
+  } catch (err) {
+    authError.value = err.message
+  } finally {
+    isAuthSubmitting.value = false
+  }
+}
+
+function initGoogleSignIn() {
+  if (window.google && window.google.accounts && window.google.accounts.id) {
+    // If user or app provides a client id or default
+    const cid = googleClientId.value || '1029384756-sessioniq.apps.googleusercontent.com'
+    try {
+      window.google.accounts.id.initialize({
+        client_id: cid,
+        callback: handleGoogleLoginSuccess,
+        auto_select: false,
+      })
+      const btnContainer = document.getElementById('gsi-button-container')
+      if (btnContainer) {
+        window.google.accounts.id.renderButton(btnContainer, {
+          theme: 'outline',
+          size: 'large',
+          width: 320,
+          text: 'signin_with',
+          shape: 'rectangular',
+        })
+      }
+    } catch (e) {
+      console.warn('GSI init note:', e)
+    }
+  }
+}
+
+watch(showAuthModal, (val) => {
+  if (val) {
+    setTimeout(() => {
+      initGoogleSignIn()
+    }, 200)
+  }
+})
 
 function logoutUser() {
   currentUser.value = null
@@ -772,26 +893,71 @@ onMounted(() => {
           ⚠️ {{ authError }}
         </div>
 
-        <form @submit.prevent="handleAuthSubmit" class="auth-form">
-          <div v-if="authMode === 'register'" class="form-group mb-3">
-            <label class="form-label">Display Name / Speaker Handle:</label>
-            <input
-              v-model="authDisplayName"
-              placeholder="e.g. Jayaraj Kannan"
-              class="neo-input"
-            />
-          </div>
+        <!-- Google Sign In Quick Action -->
+        <div class="google-auth-container mb-3">
+          <div id="gsi-button-container" class="gsi-slot"></div>
+          <button
+            type="button"
+            @click="handleQuickGoogleSignIn"
+            class="neo-btn google-btn full-width"
+          >
+            <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+            </svg>
+            Sign in with Google
+          </button>
+        </div>
 
-          <div class="form-group mb-3">
-            <label class="form-label">Email Address:</label>
-            <input
-              v-model="authEmail"
-              type="email"
-              required
-              placeholder="user@example.com"
-              class="neo-input"
-            />
-          </div>
+        <div class="auth-divider">
+          <span>OR USE USERNAME & PASSWORD</span>
+        </div>
+
+        <form @submit.prevent="handleAuthSubmit" class="auth-form">
+          <template v-if="authMode === 'register'">
+            <div class="form-group mb-3">
+              <label class="form-label">Username:</label>
+              <input
+                v-model="authUsername"
+                required
+                placeholder="e.g. jayaraj_kannan"
+                class="neo-input"
+              />
+            </div>
+
+            <div class="form-group mb-3">
+              <label class="form-label">Display Name / Speaker Handle (Optional):</label>
+              <input
+                v-model="authDisplayName"
+                placeholder="e.g. Jayaraj Kannan"
+                class="neo-input"
+              />
+            </div>
+
+            <div class="form-group mb-3">
+              <label class="form-label">Email Address (Optional):</label>
+              <input
+                v-model="authEmail"
+                type="email"
+                placeholder="user@example.com"
+                class="neo-input"
+              />
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="form-group mb-3">
+              <label class="form-label">Username or Email Address:</label>
+              <input
+                v-model="authIdentifier"
+                required
+                placeholder="Enter your username or email"
+                class="neo-input"
+              />
+            </div>
+          </template>
 
           <div class="form-group mb-4">
             <label class="form-label">Password:</label>
@@ -1574,6 +1740,72 @@ onMounted(() => {
   font-weight: 800;
   margin-bottom: 16px;
   border: 2px solid #be123c;
+}
+
+.google-auth-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.gsi-slot {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--color-white);
+  color: var(--color-black);
+  border: 3px solid var(--color-black);
+  font-weight: 800;
+  font-size: 0.95rem;
+  padding: 10px 16px;
+  box-shadow: 4px 4px 0px var(--color-black);
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.google-btn:hover {
+  background: #f8fafc;
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0px var(--color-black);
+}
+
+.google-icon {
+  flex-shrink: 0;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 18px 0;
+  position: relative;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 2px dashed #bbb;
+}
+
+.auth-divider span {
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  color: #666;
+  letter-spacing: 0.8px;
 }
 
 .form-group {

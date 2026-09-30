@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 
 // Dynamic server configuration from Vite environment variables with automatic fallback
 const getApiBase = () => {

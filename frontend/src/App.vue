@@ -77,6 +77,85 @@ const winnerData = ref(null)
 const timeLeft = ref(15)
 let timerInterval = null
 
+// --- User Authentication State (Firestore User Management) ---
+const currentUser = ref(null)
+const showAuthModal = ref(false)
+const authMode = ref('login') // 'login' | 'register'
+const authEmail = ref('')
+const authPassword = ref('')
+const authDisplayName = ref('')
+const authError = ref('')
+const isAuthSubmitting = ref(false)
+
+// Load user from localStorage if saved
+try {
+  const savedUser = localStorage.getItem('sessioniq_user')
+  if (savedUser) {
+    currentUser.value = JSON.parse(savedUser)
+  }
+} catch (e) {
+  console.warn('Failed reading user from storage', e)
+}
+
+function getAuthHeaders() {
+  const headers = { 'Content-Type': 'application/json' }
+  if (currentUser.value && currentUser.value.token) {
+    headers['Authorization'] = `Bearer ${currentUser.value.token}`
+  }
+  return headers
+}
+
+async function handleAuthSubmit() {
+  authError.value = ''
+  if (!authEmail.value.trim() || !authPassword.value.trim()) {
+    authError.value = 'Please enter email and password'
+    return
+  }
+  isAuthSubmitting.value = true
+  const endpoint = authMode.value === 'register' ? '/api/auth/register' : '/api/auth/login'
+  const payload = {
+    email: authEmail.value.trim(),
+    password: authPassword.value,
+  }
+  if (authMode.value === 'register' && authDisplayName.value.trim()) {
+    payload.display_name = authDisplayName.value.trim()
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      throw new Error(data.detail || 'Authentication failed')
+    }
+    currentUser.value = data.user
+    localStorage.setItem('sessioniq_user', JSON.stringify(data.user))
+    username.value = data.user.display_name || data.user.email.split('@')[0]
+    showAuthModal.value = false
+    statusMessage.value = `Welcome, ${username.value}! You can now create sessions and build quizzes.`
+  } catch (err) {
+    authError.value = err.message
+  } finally {
+    isAuthSubmitting.value = false
+  }
+}
+
+function logoutUser() {
+  currentUser.value = null
+  localStorage.removeItem('sessioniq_user')
+  statusMessage.value = 'Logged out. You are now playing as a guest.'
+}
+
+const isSessionOwner = computed(() => {
+  if (!activeSession.value) return false
+  // If session has no owner_id, allow current user or host
+  if (!activeSession.value.owner_id) return true
+  return currentUser.value && currentUser.value.user_id === activeSession.value.owner_id
+})
+
 // --- API Calls ---
 async function fetchSessions() {
   isLoading.value = true
@@ -93,19 +172,25 @@ async function fetchSessions() {
 
 async function createNewSession() {
   if (!newSessionTitle.value.trim()) return
+  if (!currentUser.value) {
+    showAuthModal.value = true
+    authError.value = 'Please sign in or register to create a new session as its owner.'
+    return
+  }
   isLoading.value = true
   overlayLoadingTitle.value = 'Creating New Session...'
   overlayLoadingSubtitle.value = 'Initializing session document in Google Cloud Firestore...'
   try {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         title: newSessionTitle.value,
         description: newSessionDesc.value
       })
     })
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Failed to create session')
     newSessionTitle.value = ''
     newSessionDesc.value = ''
     showCreateModal.value = false
@@ -137,6 +222,10 @@ function onFileSelected(event) {
 
 async function uploadMaterial() {
   if (!selectedFile.value || !activeSession.value) return
+  if (!isSessionOwner.value) {
+    statusMessage.value = 'Permission denied: Only the session owner can upload source materials.'
+    return
+  }
   uploadProgress.value = true
   overlayLoadingTitle.value = 'Uploading Material...'
   overlayLoadingSubtitle.value = `Streaming "${selectedFile.value.name}" to Cloud Storage & registering in Firestore...`
@@ -145,11 +234,18 @@ async function uploadMaterial() {
     formData.append('file', selectedFile.value)
     formData.append('category', 'input_materials')
 
+    const uploadHeaders = {}
+    if (currentUser.value && currentUser.value.token) {
+      uploadHeaders['Authorization'] = `Bearer ${currentUser.value.token}`
+    }
+
     const res = await fetch(`${API_BASE}/api/sessions/${activeSession.value.session_id}/upload`, {
       method: 'POST',
+      headers: uploadHeaders,
       body: formData
     })
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Upload failed')
     statusMessage.value = `Uploaded "${data.file_name}" to GCS successfully!`
     selectedFile.value = null
     await viewSessionDetail(activeSession.value.session_id)
@@ -162,6 +258,10 @@ async function uploadMaterial() {
 
 async function triggerQuizGeneration(difficulty) {
   if (!activeSession.value) return
+  if (!isSessionOwner.value) {
+    statusMessage.value = 'Permission denied: Only the session owner can build or generate quizzes.'
+    return
+  }
   selectedDifficulty.value = difficulty
   isGeneratingQuiz.value = true
   overlayLoadingTitle.value = `Building ${difficulty.toUpperCase()} Quiz...`
@@ -170,7 +270,7 @@ async function triggerQuizGeneration(difficulty) {
   try {
     const res = await fetch(`${API_BASE}/api/sessions/${activeSession.value.session_id}/generate-quiz`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         session_id: activeSession.value.session_id,
         difficulty: difficulty,
@@ -178,6 +278,7 @@ async function triggerQuizGeneration(difficulty) {
       })
     })
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Quiz generation failed')
     statusMessage.value = `Quiz successfully created and saved to Firestore!`
     await viewSessionDetail(activeSession.value.session_id)
   } catch (e) {
@@ -190,16 +291,21 @@ async function triggerQuizGeneration(difficulty) {
 // --- Multiplayer Game Flow ---
 async function hostMultiplayerLobby(difficulty) {
   if (!activeSession.value) return
+  if (!isSessionOwner.value) {
+    statusMessage.value = 'Permission denied: Only the session owner can host a multiplayer room for this session.'
+    return
+  }
   try {
     const res = await fetch(`${API_BASE}/api/rooms`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         session_id: activeSession.value.session_id,
         difficulty: difficulty
       })
     })
     const room = await res.json()
+    if (!res.ok) throw new Error(room.detail || 'Failed to create room')
     activeRoom.value = room
     isHost.value = true
     connectToRoomSocket(room.room_code)
@@ -222,7 +328,8 @@ function connectToRoomSocket(roomCode) {
   ws.onopen = () => {
     ws.send(JSON.stringify({
       username: username.value,
-      is_host: isHost.value
+      is_host: isHost.value,
+      auth_token: currentUser.value ? currentUser.value.token : null,
     }))
     currentTab.value = 'lobby'
   }
@@ -324,6 +431,22 @@ onMounted(() => {
           <button @click="currentTab = 'sessions'" class="neo-btn" :class="{ 'pink': currentTab === 'sessions' }">
             ⚡ Sessions
           </button>
+
+          <!-- User Management & Auth Widget -->
+          <div v-if="currentUser" class="user-profile-badge neo-box-static">
+            <span class="user-role-tag">👑 OWNER</span>
+            <span class="user-name">{{ currentUser.display_name || currentUser.email }}</span>
+            <button @click="logoutUser" class="neo-btn-sm logout-btn">Logout</button>
+          </div>
+          <div v-else class="auth-guest-box">
+            <button @click="showAuthModal = true; authMode = 'login'" class="neo-btn yellow">
+              🔑 Sign In
+            </button>
+            <button @click="showAuthModal = true; authMode = 'register'" class="neo-btn cyan">
+              Register
+            </button>
+          </div>
+
           <div class="player-tag">
             <span class="label">PLAYER:</span>
             <input v-model="username" class="username-input" />
@@ -391,7 +514,16 @@ onMounted(() => {
 
         <div class="detail-hero neo-box-static">
           <div class="hero-header">
-            <h2>{{ activeSession.title || 'Session Details' }}</h2>
+            <div>
+              <h2>{{ activeSession.title || 'Session Details' }}</h2>
+              <div class="session-owner-tag mt-1">
+                <span v-if="activeSession.owner_name" class="owner-pill">
+                  👤 Session Owner: <strong>{{ activeSession.owner_name }}</strong>
+                </span>
+                <span v-if="isSessionOwner" class="neo-badge green ml-2">YOU ARE OWNER</span>
+                <span v-else class="neo-badge pink ml-2">VIEWER / GUEST MODE</span>
+              </div>
+            </div>
             <span class="neo-badge green">Firestore Synced</span>
           </div>
           <p class="hero-desc">{{ activeSession.summary || activeSession.description || 'Manage materials and quiz generators for this session.' }}</p>
@@ -400,14 +532,20 @@ onMounted(() => {
         <div class="detail-split">
           <!-- Left: Input Materials & GCS Upload -->
           <div class="split-col neo-box-static">
-            <h3 class="panel-title">🗂️ Input Source Files (GCS Bucket)</h3>
+            <div class="col-title-bar">
+              <h3 class="panel-title">🗂️ Input Source Files (GCS Bucket)</h3>
+              <span v-if="!isSessionOwner" class="owner-lock-badge">🔒 Owner Only</span>
+            </div>
             <p class="panel-desc">Raw video/audio transcripts and session notes stored in <code>sessions/{{ activeSession.session_id }}/input_materials/</code></p>
 
-            <div class="upload-zone neo-box">
+            <div v-if="isSessionOwner" class="upload-zone neo-box">
               <input type="file" @change="onFileSelected" />
               <button @click="uploadMaterial" :disabled="!selectedFile || uploadProgress" class="neo-btn cyan">
                 {{ uploadProgress ? 'Uploading...' : 'Upload to Cloud Storage' }}
               </button>
+            </div>
+            <div v-else class="owner-restricted-box neo-box">
+              <span>🔒 Only the session owner can upload additional training or transcript materials.</span>
             </div>
 
             <div class="files-list">
@@ -426,10 +564,13 @@ onMounted(() => {
 
           <!-- Right: Quiz Generators & Available Difficulties -->
           <div class="split-col neo-box-static">
-            <h3 class="panel-title">🎯 AI Quiz Engine (Firestore DB)</h3>
+            <div class="col-title-bar">
+              <h3 class="panel-title">🎯 AI Quiz Engine (Firestore DB)</h3>
+              <span v-if="!isSessionOwner" class="owner-lock-badge">🔒 Owner Only</span>
+            </div>
             <p class="panel-desc">Trigger multi-agents to extract concepts and store schemas directly in Firestore.</p>
 
-            <div class="quiz-gen-actions">
+            <div v-if="isSessionOwner" class="quiz-gen-actions">
               <span class="gen-label">Generate By Difficulty:</span>
               <div class="btn-group">
                 <button @click="triggerQuizGeneration('simple')" :disabled="isGeneratingQuiz" class="neo-btn green">
@@ -443,6 +584,9 @@ onMounted(() => {
                 </button>
               </div>
             </div>
+            <div v-else class="owner-restricted-box neo-box">
+              <span>🔒 Only the session owner can generate or modify quizzes for this session.</span>
+            </div>
 
             <div v-if="isGeneratingQuiz" class="generating-box neo-box">
               <h4>🤖 Agents Collaborating...</h4>
@@ -453,7 +597,7 @@ onMounted(() => {
             <div class="available-quizzes">
               <h4>Ready-to-Play Quizzes:</h4>
               <div v-if="!activeSession.quizzes || !Object.keys(activeSession.quizzes).length" class="empty-quizzes">
-                No quizzes generated yet. Click a difficulty above!
+                No quizzes generated yet.
               </div>
 
               <div v-for="(quiz, diff) in activeSession.quizzes" :key="diff" class="quiz-item neo-box">
@@ -463,9 +607,12 @@ onMounted(() => {
                 </div>
                 <h5>{{ quiz.title }}</h5>
                 <p>{{ quiz.summary }}</p>
-                <button @click="hostMultiplayerLobby(diff)" class="neo-btn purple">
+                <button v-if="isSessionOwner" @click="hostMultiplayerLobby(diff)" class="neo-btn purple">
                   🎮 Host Live Multiplayer
                 </button>
+                <div v-else class="guest-info-badge neo-badge yellow">
+                  🎮 Available for multiplayer when launched by session owner!
+                </div>
               </div>
             </div>
           </div>
@@ -589,6 +736,83 @@ onMounted(() => {
           <button @click="showCreateModal = false" class="neo-btn">Cancel</button>
           <button @click="createNewSession" class="neo-btn green">Save Session</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Modal: User Authentication (Login / Register) -->
+    <div v-if="showAuthModal" class="modal-overlay">
+      <div class="modal-content auth-modal neo-box-static">
+        <div class="auth-modal-header">
+          <h3>{{ authMode === 'register' ? '📝 Register Session Owner' : '🔑 Owner Sign In' }}</h3>
+          <div class="auth-switch-tabs">
+            <button
+              @click="authMode = 'login'; authError = ''"
+              class="neo-btn-sm"
+              :class="{ 'yellow': authMode === 'login' }"
+            >
+              Sign In
+            </button>
+            <button
+              @click="authMode = 'register'; authError = ''"
+              class="neo-btn-sm"
+              :class="{ 'cyan': authMode === 'register' }"
+            >
+              Register
+            </button>
+          </div>
+        </div>
+
+        <p class="auth-modal-sub">
+          {{ authMode === 'register'
+            ? 'Create an account to host sessions, upload training media, and generate AI quizzes.'
+            : 'Sign in to access your sessions and start multiplayer quiz battles.' }}
+        </p>
+
+        <div v-if="authError" class="auth-error-banner neo-box">
+          ⚠️ {{ authError }}
+        </div>
+
+        <form @submit.prevent="handleAuthSubmit" class="auth-form">
+          <div v-if="authMode === 'register'" class="form-group mb-3">
+            <label class="form-label">Display Name / Speaker Handle:</label>
+            <input
+              v-model="authDisplayName"
+              placeholder="e.g. Jayaraj Kannan"
+              class="neo-input"
+            />
+          </div>
+
+          <div class="form-group mb-3">
+            <label class="form-label">Email Address:</label>
+            <input
+              v-model="authEmail"
+              type="email"
+              required
+              placeholder="user@example.com"
+              class="neo-input"
+            />
+          </div>
+
+          <div class="form-group mb-4">
+            <label class="form-label">Password:</label>
+            <input
+              v-model="authPassword"
+              type="password"
+              required
+              placeholder="••••••••"
+              class="neo-input"
+            />
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" @click="showAuthModal = false; authError = ''" class="neo-btn">
+              Cancel
+            </button>
+            <button type="submit" :disabled="isAuthSubmitting" class="neo-btn green">
+              {{ isAuthSubmitting ? 'Authenticating...' : (authMode === 'register' ? 'Register Account' : 'Sign In') }}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -1211,6 +1435,159 @@ onMounted(() => {
   background: var(--neo-yellow);
   font-size: 0.78rem;
   letter-spacing: 0.8px;
+}
+
+.user-profile-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--neo-yellow);
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.user-role-tag {
+  background: var(--color-black);
+  color: var(--neo-yellow);
+  padding: 2px 6px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+}
+
+.user-name {
+  color: var(--color-black);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.neo-btn-sm {
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border: var(--border-thick);
+  background: var(--color-white);
+  cursor: pointer;
+  box-shadow: 2px 2px 0px var(--color-black);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.neo-btn-sm:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px var(--color-black);
+}
+
+.logout-btn {
+  background: var(--neo-pink);
+  color: var(--color-white);
+}
+
+.auth-guest-box {
+  display: flex;
+  gap: 6px;
+}
+
+.session-owner-tag {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.owner-pill {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.col-title-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.owner-lock-badge {
+  background: var(--neo-pink);
+  color: var(--color-white);
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  border: 2px solid var(--color-black);
+  box-shadow: 2px 2px 0px var(--color-black);
+}
+
+.owner-restricted-box {
+  background: #fdf2f4;
+  border: 2px dashed #e11d48;
+  padding: 16px;
+  margin-bottom: 20px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #9f1239;
+  text-align: center;
+}
+
+.guest-info-badge {
+  display: block;
+  text-align: center;
+  margin-top: 10px;
+  font-size: 0.8rem;
+  padding: 8px;
+}
+
+.auth-modal {
+  max-width: 460px;
+  width: 90%;
+  background: var(--color-white);
+}
+
+.auth-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.auth-switch-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.auth-modal-sub {
+  font-size: 0.9rem;
+  color: #555;
+  font-weight: 600;
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.auth-error-banner {
+  background: #ffe4e6;
+  color: #be123c;
+  padding: 10px;
+  font-size: 0.85rem;
+  font-weight: 800;
+  margin-bottom: 16px;
+  border: 2px solid #be123c;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.form-label {
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 @media (max-width: 768px) {

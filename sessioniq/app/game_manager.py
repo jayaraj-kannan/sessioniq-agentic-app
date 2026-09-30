@@ -24,11 +24,12 @@ class Player:
         }
 
 class QuizRoom:
-    def __init__(self, room_code: str, session_id: str, difficulty: str, quiz_data: Dict[str, Any]):
+    def __init__(self, room_code: str, session_id: str, difficulty: str, quiz_data: Dict[str, Any], owner_id: Optional[str] = None):
         self.room_code = room_code
         self.session_id = session_id
         self.difficulty = difficulty
         self.quiz_data = quiz_data
+        self.owner_id = owner_id
         self.questions: List[Dict[str, Any]] = quiz_data.get("questions", [])
         self.players: Dict[str, Player] = {}
         self.status = "waiting"  # waiting, question_active, question_result, finished
@@ -111,8 +112,8 @@ class GameManager:
     def __init__(self):
         self.rooms: Dict[str, QuizRoom] = {}
 
-    def create_room(self, room_code: str, session_id: str, difficulty: str, quiz_data: Dict[str, Any]) -> QuizRoom:
-        room = QuizRoom(room_code, session_id, difficulty, quiz_data)
+    def create_room(self, room_code: str, session_id: str, difficulty: str, quiz_data: Dict[str, Any], owner_id: Optional[str] = None) -> QuizRoom:
+        room = QuizRoom(room_code, session_id, difficulty, quiz_data, owner_id=owner_id)
         self.rooms[room_code] = room
         return room
 

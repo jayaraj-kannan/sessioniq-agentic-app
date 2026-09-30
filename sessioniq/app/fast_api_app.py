@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google.cloud import firestore
@@ -36,7 +36,25 @@ app.add_middleware(
 def _generate_room_code(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
+from app.auth import (
+    register_user,
+    login_user,
+    get_current_user_optional,
+    get_current_user_required,
+    verify_session_ownership,
+    get_firestore_client,
+)
+
 # --- Models ---
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
 class CreateSessionRequest(BaseModel):
     title: str
     description: Optional[str] = ""
@@ -56,6 +74,38 @@ class CreateRoomRequest(BaseModel):
 async def health_check():
     return {"status": "ok", "service": "SessionIQ Server"}
 
+# --- Auth Endpoints (Firestore Users Collection) ---
+
+@app.post("/api/auth/register")
+async def handle_register(req: RegisterRequest):
+    """Register a new user account in Firestore."""
+    try:
+        user = register_user(req.email, req.password, req.display_name)
+        return {"status": "success", "user": user}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/auth/login")
+async def handle_login(req: LoginRequest):
+    """Authenticate an existing user account against Firestore."""
+    try:
+        user = login_user(req.email, req.password)
+        return {"status": "success", "user": user}
+    except ValueError as ve:
+        raise HTTPException(status_code=401, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/auth/me")
+async def handle_get_me(authorization: Optional[str] = Header(None)):
+    """Get current user from auth token."""
+    user = get_current_user_optional(authorization)
+    if not user:
+        return {"authenticated": False, "user": None}
+    return {"authenticated": True, "user": user}
+
 @app.get("/api/sessions")
 async def get_sessions():
     """List all sessions from Firestore."""
@@ -72,8 +122,9 @@ async def get_sessions():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/sessions")
-async def create_session(req: CreateSessionRequest):
-    """Create a new session document."""
+async def create_session(req: CreateSessionRequest, authorization: Optional[str] = Header(None)):
+    """Create a new session document. Requires authenticated user who becomes the session owner."""
+    user = get_current_user_required(authorization)
     try:
         project_id = _get_project_id()
         db = firestore.Client(project=project_id)
@@ -83,6 +134,9 @@ async def create_session(req: CreateSessionRequest):
             "session_id": session_id,
             "title": req.title,
             "description": req.description,
+            "owner_id": user["user_id"],
+            "owner_email": user["email"],
+            "owner_name": user.get("display_name", user["email"]),
             "created_at": now_iso,
             "updated_at": now_iso,
             "has_materials": False,
@@ -121,9 +175,13 @@ async def get_session(session_id: str):
 async def upload_material(
     session_id: str,
     file: UploadFile = File(...),
-    category: str = Form("input_materials")
+    category: str = Form("input_materials"),
+    authorization: Optional[str] = Header(None),
 ):
-    """Uploads an input transcript/file to GCS for the session."""
+    """Uploads an input transcript/file to GCS for the session. Only session owner permitted."""
+    user = get_current_user_required(authorization)
+    verify_session_ownership(session_id, user)
+
     try:
         content_bytes = await file.read()
         try:
@@ -142,8 +200,11 @@ async def upload_material(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/sessions/{session_id}/generate-quiz")
-async def generate_quiz(session_id: str, req: GenerateQuizRequest):
-    """Invokes coordinator & sub-agents to analyze session materials and generate quiz in Firestore."""
+async def generate_quiz(session_id: str, req: GenerateQuizRequest, authorization: Optional[str] = Header(None)):
+    """Invokes coordinator & sub-agents to analyze session materials and generate quiz in Firestore. Only session owner permitted."""
+    user = get_current_user_required(authorization)
+    verify_session_ownership(session_id, user)
+
     try:
         # Load materials from GCS for this session
         files_json = list_session_files(session_id)
@@ -223,8 +284,11 @@ async def generate_quiz(session_id: str, req: GenerateQuizRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/rooms")
-async def create_multiplayer_room(req: CreateRoomRequest):
-    """Creates a real-time multiplayer room based on a Firestore session quiz."""
+async def create_multiplayer_room(req: CreateRoomRequest, authorization: Optional[str] = Header(None)):
+    """Creates a real-time multiplayer room based on a Firestore session quiz. Only session owner permitted."""
+    user = get_current_user_required(authorization)
+    verify_session_ownership(req.session_id, user)
+
     quiz_str = get_session_quiz_from_firestore(req.session_id, req.difficulty)
     try:
         quiz_data = json.loads(quiz_str)
@@ -232,13 +296,14 @@ async def create_multiplayer_room(req: CreateRoomRequest):
         raise HTTPException(status_code=404, detail="No quiz found for session/difficulty. Generate it first.")
     
     room_code = _generate_room_code()
-    room = game_manager.create_room(room_code, req.session_id, req.difficulty, quiz_data)
+    room = game_manager.create_room(room_code, req.session_id, req.difficulty, quiz_data, owner_id=user["user_id"])
     return {
         "room_code": room_code,
         "session_id": req.session_id,
         "difficulty": req.difficulty,
         "title": quiz_data.get("title", "SessionIQ Quiz"),
         "total_questions": len(room.questions),
+        "owner_id": user["user_id"],
     }
 
 @app.get("/api/rooms/{room_code}/leaderboard")
@@ -269,6 +334,23 @@ async def quiz_websocket_endpoint(websocket: WebSocket, room_code: str):
         init_msg = json.loads(init_data)
         username = init_msg.get("username", f"Player_{player_id[-4:]}")
         is_host = init_msg.get("is_host", False)
+        auth_token = init_msg.get("auth_token")
+
+        # If claiming to be host/owner, verify ownership
+        authenticated_user = None
+        if auth_token:
+            db = get_firestore_client()
+            user_docs = list(db.collection("users").where("auth_token", "==", auth_token).limit(1).stream())
+            if user_docs:
+                authenticated_user = user_docs[0].to_dict()
+
+        # If the room has an owner, only the owner can act as the host who can start the game
+        can_control = False
+        if room.owner_id:
+            if authenticated_user and authenticated_user.get("user_id") == room.owner_id:
+                can_control = True
+        else:
+            can_control = is_host
 
         player = room.add_player(player_id, username, websocket)
 
@@ -282,7 +364,7 @@ async def quiz_websocket_endpoint(websocket: WebSocket, room_code: str):
             "difficulty": room.difficulty,
             "total_questions": len(room.questions),
             "status": room.status,
-            "is_host": is_host,
+            "is_host": can_control,
         }))
 
         # Broadcast player joined to room
@@ -298,7 +380,14 @@ async def quiz_websocket_endpoint(websocket: WebSocket, room_code: str):
             msg = json.loads(data)
             action = msg.get("action")
 
-            if action == "start_game" and is_host:
+            if action == "start_game":
+                if not can_control:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "Permission denied: Only the session owner can start the quiz game."
+                    }))
+                    continue
+
                 # Host triggers game start
                 room.status = "in_progress"
                 room.current_question_index = 0

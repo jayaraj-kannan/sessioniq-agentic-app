@@ -29,13 +29,20 @@ const WS_BASE = getWsBase()
 
 
 // --- Navigation & Views ---
-const currentTab = ref('sessions') // 'sessions' | 'detail' | 'lobby' | 'game'
+const currentTab = ref('home') // 'home' | 'sessions' | 'detail' | 'lobby' | 'game'
 
 // --- Sessions State ---
 const sessions = ref([])
 const activeSession = ref(null)
 const isLoading = ref(false)
 const statusMessage = ref('')
+
+// --- Rename Session Modal State ---
+const showRenameModal = ref(false)
+const renameSessionId = ref('')
+const renameSessionTitle = ref('')
+const renameSessionDesc = ref('')
+const isRenaming = ref(false)
 
 // --- Create Session Modal/Inputs ---
 const newSessionTitle = ref('')
@@ -276,6 +283,79 @@ const isSessionOwner = computed(() => {
   if (!activeSession.value.owner_id) return true
   return currentUser.value && currentUser.value.user_id === activeSession.value.owner_id
 })
+
+// Filter sessions owned by current logged-in user
+const myOwnedSessions = computed(() => {
+  if (!currentUser.value) return []
+  return sessions.value.filter(s => s.owner_id === currentUser.value.user_id)
+})
+
+function openRenameModal(session) {
+  renameSessionId.value = session.session_id
+  renameSessionTitle.value = session.title || ''
+  renameSessionDesc.value = session.description || ''
+  showRenameModal.value = true
+}
+
+async function submitRenameSession() {
+  if (!renameSessionTitle.value.trim() || !renameSessionId.value) return
+  isRenaming.value = true
+  try {
+    const res = await fetch(`${API_BASE}/api/sessions/${renameSessionId.value}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        title: renameSessionTitle.value.trim(),
+        description: renameSessionDesc.value.trim()
+      })
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Failed to rename session')
+    
+    // Update local list
+    const idx = sessions.value.findIndex(s => s.session_id === renameSessionId.value)
+    if (idx !== -1 && data.session) {
+      sessions.value[idx] = { ...sessions.value[idx], ...data.session }
+    }
+    if (activeSession.value && activeSession.value.session_id === renameSessionId.value) {
+      activeSession.value.title = data.session.title
+      activeSession.value.description = data.session.description
+    }
+    showRenameModal.value = false
+    statusMessage.value = `Session "${data.session.title}" renamed successfully!`
+  } catch (err) {
+    statusMessage.value = 'Rename failed: ' + err.message
+  } finally {
+    isRenaming.value = false
+  }
+}
+
+async function deleteSession(sessionId, sessionTitle) {
+  const confirmMsg = `Are you sure you want to delete session "${sessionTitle || sessionId}"? All uploaded materials and quizzes will be permanently deleted.`
+  if (!confirm(confirmMsg)) return
+
+  isLoading.value = true
+  try {
+    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Failed to delete session')
+
+    // Remove from local list
+    sessions.value = sessions.value.filter(s => s.session_id !== sessionId)
+    if (activeSession.value && activeSession.value.session_id === sessionId) {
+      activeSession.value = null
+      currentTab.value = 'sessions'
+    }
+    statusMessage.value = `Session "${sessionTitle || sessionId}" was deleted.`
+  } catch (err) {
+    statusMessage.value = 'Delete failed: ' + err.message
+  } finally {
+    isLoading.value = false
+  }
+}
 
 // --- API Calls ---
 async function fetchSessions() {
@@ -549,8 +629,11 @@ onMounted(() => {
           <h1 class="logo-title">Session<span class="highlight">IQ</span></h1>
         </div>
         <div class="header-nav">
+          <button @click="currentTab = 'home'" class="neo-btn" :class="{ 'yellow': currentTab === 'home' }">
+            🏠 Home
+          </button>
           <button @click="currentTab = 'sessions'" class="neo-btn" :class="{ 'pink': currentTab === 'sessions' }">
-            ⚡ Sessions
+            ⚡ All Sessions
           </button>
 
           <!-- User Management & Auth Widget -->
@@ -584,6 +667,142 @@ onMounted(() => {
 
     <!-- MAIN VIEWS -->
     <main class="main-content">
+      <!-- 0. HOME VIEW: PROMOTION, FEATURES & LOGGED-IN OWNER SESSIONS -->
+      <section v-if="currentTab === 'home'" class="view-home">
+        <!-- Hero Promotional Banner -->
+        <div class="home-hero neo-box-static">
+          <div class="hero-content">
+            <div class="hero-tags">
+              <span class="neo-badge yellow">GEMINI 2.5 FLASH</span>
+              <span class="neo-badge cyan">VERTEX AI AGENTS</span>
+              <span class="neo-badge green">FIRESTORE REAL-TIME</span>
+            </div>
+            <h1 class="hero-heading">Transform Any Talk, Video or Doc into a <span class="highlight">Live Multiplayer Arena</span></h1>
+            <p class="hero-subheading">
+              <strong>SessionIQ</strong> is the ultimate agentic learning platform. Upload your session recordings, transcripts, or notes, and our Vertex AI Agent coordinate sub-agents to synthesize knowledge, construct rich multi-level quizzes, and host live multiplayer competitions.
+            </p>
+            <div class="hero-cta-group">
+              <button
+                v-if="!currentUser"
+                @click="showAuthModal = true; authMode = 'login'"
+                class="neo-btn yellow hero-btn"
+              >
+                🔑 Sign In / Register to Host
+              </button>
+              <button
+                v-else
+                @click="showCreateModal = true"
+                class="neo-btn cyan hero-btn"
+              >
+                ⚡ + Create New Session
+              </button>
+              <button @click="currentTab = 'sessions'" class="neo-btn white hero-btn">
+                Browse Public Sessions ➔
+              </button>
+            </div>
+          </div>
+          <div class="hero-card-side neo-box">
+            <div class="arena-preview-header">
+              <span class="dot red"></span>
+              <span class="dot yellow"></span>
+              <span class="dot green"></span>
+              <span class="arena-title">LIVE MULTIPLAYER ENGINE</span>
+            </div>
+            <div class="arena-preview-body">
+              <div class="stat-row">
+                <span class="stat-label">⚡ AI Generation:</span>
+                <span class="stat-val">Sub-second Flash</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">🔒 Firestore Auth:</span>
+                <span class="stat-val">Role-Based Security</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">🏆 Arena Sync:</span>
+                <span class="stat-val">WebSocket Real-Time</span>
+              </div>
+              <div class="join-quick-box mt-3">
+                <input v-model="roomCodeInput" placeholder="ENTER 4-DIGIT PIN" class="code-input full-width mb-2" />
+                <button @click="joinMultiplayerByCode" class="neo-btn green full-width">Join Live Battle</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LOGGED-IN OWNER SESSIONS DASHBOARD -->
+        <div v-if="currentUser" class="owner-dashboard-section mt-5">
+          <div class="section-title-bar">
+            <div>
+              <h2 class="section-title">👑 Your Owned Sessions</h2>
+              <p class="section-subtitle">You are logged in as <strong>{{ currentUser.display_name || currentUser.username || currentUser.email }}</strong>. Manage, rename, or delete your sessions below.</p>
+            </div>
+            <button @click="showCreateModal = true" class="neo-btn cyan">+ Create Session</button>
+          </div>
+
+          <div v-if="myOwnedSessions.length === 0" class="empty-owner-box neo-box-static">
+            <p>You haven't created any sessions yet! Click "+ Create Session" to upload materials and build AI quizzes.</p>
+            <button @click="showCreateModal = true" class="neo-btn yellow mt-3">Launch Your First Session</button>
+          </div>
+
+          <div v-else class="sessions-grid mt-4">
+            <div v-for="s in myOwnedSessions" :key="s.session_id" class="session-card owner-card neo-box">
+              <div class="owner-card-top">
+                <span class="neo-badge green">👑 OWNED BY YOU</span>
+                <span class="card-tag">ID: {{ s.session_id }}</span>
+              </div>
+              <h3 class="card-title">{{ s.title || 'Untitled Session' }}</h3>
+              <p class="card-desc">{{ s.summary || s.description || 'Raw input session ready for AI breakdown.' }}</p>
+
+              <div class="card-footer owner-actions-footer">
+                <button @click="viewSessionDetail(s.session_id)" class="neo-btn yellow btn-compact">
+                  Inspect ➔
+                </button>
+                <div class="btn-group-right">
+                  <button @click="openRenameModal(s)" class="neo-btn cyan btn-compact" title="Rename Session">
+                    ✏️ Rename
+                  </button>
+                  <button @click="deleteSession(s.session_id, s.title)" class="neo-btn pink btn-compact" title="Delete Session">
+                    🗑️ Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PROMOTIONAL FEATURES GRID -->
+        <div class="features-section mt-5">
+          <h2 class="section-title text-center">Engineered for Interactive Learning & Retention</h2>
+          <p class="section-subtitle text-center">SessionIQ combines Google Cloud Vertex AI, GCS Storage, and real-time Firestore synchronization.</p>
+
+          <div class="features-grid mt-4">
+            <div class="feature-card neo-box">
+              <div class="feature-icon">🤖</div>
+              <h3 class="feature-title">Vertex AI Quiz Agents</h3>
+              <p class="feature-desc">Analyzes conference talks, webinars, and study materials with Gemini 2.5 Flash to automatically extract topics and build rigorous 4-choice questions.</p>
+            </div>
+
+            <div class="feature-card neo-box">
+              <div class="feature-icon">⚡</div>
+              <h3 class="feature-title">Real-Time Multiplayer</h3>
+              <p class="feature-desc">Host high-energy live trivia battles with 4-letter room codes. Instant answer scoring, live streaks, countdown timers, and live leaderboards.</p>
+            </div>
+
+            <div class="feature-card neo-box">
+              <div class="feature-icon">🔒</div>
+              <h3 class="feature-title">Firestore User Management</h3>
+              <p class="feature-desc">Secure account creation with username/password or Google Sign-In. Full role-based authorization: only session owners can upload media and generate tests.</p>
+            </div>
+
+            <div class="feature-card neo-box">
+              <div class="feature-icon">📦</div>
+              <h3 class="feature-title">Enterprise Cloud Storage</h3>
+              <p class="feature-desc">Isolated per-session source buckets on Google Cloud Storage for audio, video, transcripts, and presentation decks.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- 1. SESSIONS CATALOG VIEW -->
       <section v-if="currentTab === 'sessions'" class="view-sessions">
         <div class="sessions-header">
@@ -645,7 +864,17 @@ onMounted(() => {
                 <span v-else class="neo-badge pink ml-2">VIEWER / GUEST MODE</span>
               </div>
             </div>
-            <span class="neo-badge green">Firestore Synced</span>
+            <div class="hero-header-actions">
+              <template v-if="isSessionOwner">
+                <button @click="openRenameModal(activeSession)" class="neo-btn cyan btn-compact">
+                  ✏️ Rename
+                </button>
+                <button @click="deleteSession(activeSession.session_id, activeSession.title)" class="neo-btn pink btn-compact">
+                  🗑️ Delete
+                </button>
+              </template>
+              <span class="neo-badge green">Firestore Synced</span>
+            </div>
           </div>
           <p class="hero-desc">{{ activeSession.summary || activeSession.description || 'Manage materials and quiz generators for this session.' }}</p>
         </div>
@@ -976,6 +1205,45 @@ onMounted(() => {
             </button>
             <button type="submit" :disabled="isAuthSubmitting" class="neo-btn green">
               {{ isAuthSubmitting ? 'Authenticating...' : (authMode === 'register' ? 'Register Account' : 'Sign In') }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Rename Session -->
+    <div v-if="showRenameModal" class="modal-overlay">
+      <div class="modal-content neo-box-static">
+        <h3>✏️ Rename Session</h3>
+        <p class="modal-sub">Update the title and description for this session in Firestore.</p>
+
+        <form @submit.prevent="submitRenameSession">
+          <div class="form-group mb-3">
+            <label class="form-label">Session Title:</label>
+            <input
+              v-model="renameSessionTitle"
+              required
+              placeholder="e.g. Next-Gen Vertex AI Architecture"
+              class="neo-input"
+            />
+          </div>
+
+          <div class="form-group mb-4">
+            <label class="form-label">Session Description / Summary:</label>
+            <textarea
+              v-model="renameSessionDesc"
+              rows="3"
+              placeholder="Summary of this session's contents..."
+              class="neo-input"
+            ></textarea>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" @click="showRenameModal = false" class="neo-btn">
+              Cancel
+            </button>
+            <button type="submit" :disabled="isRenaming" class="neo-btn green">
+              {{ isRenaming ? 'Saving...' : 'Save Changes' }}
             </button>
           </div>
         </form>
@@ -1820,6 +2088,196 @@ onMounted(() => {
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+/* Home Promotional & Dashboard Styles */
+.view-home {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.home-hero {
+  display: grid;
+  grid-template-columns: 1.3fr 0.9fr;
+  gap: 32px;
+  background: var(--color-white);
+  padding: 40px;
+  align-items: center;
+}
+
+.hero-tags {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.hero-heading {
+  font-size: 2.4rem;
+  font-weight: 900;
+  line-height: 1.15;
+  margin-bottom: 16px;
+  color: var(--color-black);
+}
+
+.hero-subheading {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: #333;
+  margin-bottom: 24px;
+}
+
+.hero-cta-group {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hero-btn {
+  font-size: 1rem;
+  padding: 12px 20px;
+}
+
+.hero-card-side {
+  background: #fdfaf0;
+  padding: 24px;
+}
+
+.arena-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--color-black);
+  margin-bottom: 16px;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--color-black);
+}
+
+.dot.red { background: var(--neo-pink); }
+.dot.yellow { background: var(--neo-yellow); }
+.dot.green { background: var(--neo-green); }
+
+.arena-title {
+  font-weight: 900;
+  font-size: 0.85rem;
+  margin-left: 6px;
+  letter-spacing: 0.5px;
+}
+
+.arena-preview-body .stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border-bottom: 1px dashed #ccc;
+}
+
+.stat-label {
+  color: #444;
+}
+
+.stat-val {
+  color: var(--color-black);
+  font-weight: 900;
+}
+
+.owner-dashboard-section {
+  background: #f0fdf4;
+  border: 3px solid var(--color-black);
+  box-shadow: 6px 6px 0px var(--color-black);
+  padding: 28px;
+}
+
+.owner-card {
+  border-color: #15803d;
+}
+
+.owner-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.owner-actions-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.btn-group-right {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-compact {
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+.empty-owner-box {
+  background: var(--color-white);
+  padding: 30px;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.features-section {
+  padding: 20px 0;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+}
+
+.feature-card {
+  background: var(--color-white);
+  padding: 24px;
+}
+
+.feature-icon {
+  font-size: 2.2rem;
+  margin-bottom: 12px;
+}
+
+.feature-title {
+  font-size: 1.2rem;
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+
+.feature-desc {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #444;
+  font-weight: 500;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.hero-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .home-hero {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 768px) {

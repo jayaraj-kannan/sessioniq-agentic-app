@@ -68,6 +68,10 @@ class CreateSessionRequest(BaseModel):
     title: str
     description: Optional[str] = ""
 
+class RenameSessionRequest(BaseModel):
+    title: str
+    description: Optional[str] = None
+
 class GenerateQuizRequest(BaseModel):
     session_id: str
     difficulty: str = "medium"  # simple, medium, hard
@@ -201,6 +205,59 @@ async def get_session(session_id: str):
         session_data["quizzes"] = quizzes
         session_data["files"] = json.loads(list_session_files(session_id))
         return session_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/sessions/{session_id}")
+async def rename_session(
+    session_id: str,
+    req: RenameSessionRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """Renames/updates session title and description. Only session owner permitted."""
+    user = get_current_user_required(authorization)
+    verify_session_ownership(session_id, user)
+
+    try:
+        project_id = _get_project_id()
+        db = firestore.Client(project=project_id)
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        update_dict = {
+            "title": req.title.strip(),
+            "updated_at": now_iso,
+        }
+        if req.description is not None:
+            update_dict["description"] = req.description.strip()
+
+        db.collection("sessions").document(session_id).update(update_dict)
+
+        doc = db.collection("sessions").document(session_id).get()
+        return {"status": "success", "session": doc.to_dict()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Deletes a session and its quizzes. Only session owner permitted."""
+    user = get_current_user_required(authorization)
+    verify_session_ownership(session_id, user)
+
+    try:
+        project_id = _get_project_id()
+        db = firestore.Client(project=project_id)
+
+        # Delete subcollections (quizzes)
+        for diff in ["simple", "medium", "hard"]:
+            db.collection("sessions").document(session_id).collection("quizzes").document(diff).delete()
+
+        # Delete the main session document
+        db.collection("sessions").document(session_id).delete()
+
+        return {"status": "success", "message": f"Session {session_id} deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

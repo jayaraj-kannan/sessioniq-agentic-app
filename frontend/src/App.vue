@@ -46,6 +46,13 @@ const showCreateModal = ref(false)
 const selectedFile = ref(null)
 const uploadProgress = ref(false)
 
+// --- Global Blocking Loading Overlay State ---
+const overlayLoadingTitle = ref('')
+const overlayLoadingSubtitle = ref('')
+const isOverlayLoading = computed(() => {
+  return uploadProgress.value || isGeneratingQuiz.value || (isLoading.value && showCreateModal.value)
+})
+
 // --- Quiz Generation State ---
 const selectedDifficulty = ref('medium')
 const isGeneratingQuiz = ref(false)
@@ -87,6 +94,8 @@ async function fetchSessions() {
 async function createNewSession() {
   if (!newSessionTitle.value.trim()) return
   isLoading.value = true
+  overlayLoadingTitle.value = 'Creating New Session...'
+  overlayLoadingSubtitle.value = 'Initializing session document in Google Cloud Firestore...'
   try {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
@@ -129,6 +138,8 @@ function onFileSelected(event) {
 async function uploadMaterial() {
   if (!selectedFile.value || !activeSession.value) return
   uploadProgress.value = true
+  overlayLoadingTitle.value = 'Uploading Material...'
+  overlayLoadingSubtitle.value = `Streaming "${selectedFile.value.name}" to Cloud Storage & registering in Firestore...`
   try {
     const formData = new FormData()
     formData.append('file', selectedFile.value)
@@ -153,6 +164,8 @@ async function triggerQuizGeneration(difficulty) {
   if (!activeSession.value) return
   selectedDifficulty.value = difficulty
   isGeneratingQuiz.value = true
+  overlayLoadingTitle.value = `Building ${difficulty.toUpperCase()} Quiz...`
+  overlayLoadingSubtitle.value = 'Gemini 2.5 Flash agents are reading materials, analyzing concepts, and structuring questions...'
   statusMessage.value = `Agents are analyzing materials and generating ${difficulty} quiz...`
   try {
     const res = await fetch(`${API_BASE}/api/sessions/${activeSession.value.session_id}/generate-quiz`, {
@@ -575,6 +588,24 @@ onMounted(() => {
         <div class="modal-actions">
           <button @click="showCreateModal = false" class="neo-btn">Cancel</button>
           <button @click="createNewSession" class="neo-btn green">Save Session</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Full-Screen Blocking Loading Overlay -->
+    <div v-if="isOverlayLoading" class="overlay-backdrop">
+      <div class="overlay-card neo-box-static">
+        <div class="overlay-spinner-box">
+          <div class="neo-spinner"></div>
+          <span class="spinner-icon">⚡</span>
+        </div>
+        <h3 class="overlay-title">{{ overlayLoadingTitle || 'Processing Request...' }}</h3>
+        <p class="overlay-subtitle">{{ overlayLoadingSubtitle || 'Please wait, synchronizing with Vertex AI & Google Cloud...' }}</p>
+        <div class="overlay-progress-bar">
+          <div class="overlay-progress-fill"></div>
+        </div>
+        <div class="overlay-status-tag">
+          <span class="neo-badge">DO NOT REFRESH • ACTION IN PROGRESS</span>
         </div>
       </div>
     </div>
@@ -1053,6 +1084,134 @@ onMounted(() => {
 
 .mb-3 { margin-bottom: 12px; }
 .mt-4 { margin-top: 16px; }
+
+/* Full-Screen Blocking Loading Overlay */
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 18, 18, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: wait;
+  user-select: none;
+}
+
+.overlay-card {
+  width: 90%;
+  max-width: 520px;
+  background: #ffffff;
+  padding: 36px 28px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border: var(--border-thicker);
+  box-shadow: 10px 10px 0px var(--color-black);
+  animation: popIn 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes popIn {
+  from {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.overlay-spinner-box {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.neo-spinner {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 6px solid #f0f0f0;
+  border-top: 6px solid var(--neo-pink);
+  border-right: 6px solid var(--neo-yellow);
+  border-bottom: 6px solid var(--neo-cyan);
+  animation: spin 0.9s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.spinner-icon {
+  font-size: 2.2rem;
+  animation: pulse 1s infinite alternate;
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.9); }
+  100% { transform: scale(1.15); }
+}
+
+.overlay-title {
+  font-size: 1.6rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  color: var(--color-black);
+}
+
+.overlay-subtitle {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #444;
+  margin-bottom: 24px;
+  line-height: 1.5;
+  max-width: 440px;
+}
+
+.overlay-progress-bar {
+  width: 100%;
+  height: 14px;
+  background: #f0f0f0;
+  border: var(--border-thick);
+  overflow: hidden;
+  margin-bottom: 18px;
+  position: relative;
+}
+
+.overlay-progress-fill {
+  height: 100%;
+  width: 40%;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--neo-yellow),
+    var(--neo-yellow) 12px,
+    var(--neo-cyan) 12px,
+    var(--neo-cyan) 24px
+  );
+  animation: progressMove 1.4s linear infinite;
+}
+
+@keyframes progressMove {
+  0% { transform: translateX(-100%); width: 35%; }
+  50% { width: 65%; }
+  100% { transform: translateX(300%); width: 35%; }
+}
+
+.overlay-status-tag .neo-badge {
+  background: var(--neo-yellow);
+  font-size: 0.78rem;
+  letter-spacing: 0.8px;
+}
 
 @media (max-width: 768px) {
   .detail-split, .options-grid {
